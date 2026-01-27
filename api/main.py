@@ -13,6 +13,7 @@ from datetime import datetime
 import json
 
 from analyzer import StockAnalyzer, NaverFinanceCrawler
+from supabase_client import SupabaseService
 
 # ============================================================
 # FastAPI 앱 설정
@@ -46,12 +47,33 @@ class AnalyzeRequest(BaseModel):
     stock: str = Field(..., description="종목코드 또는 종목명", example="005930")
     tech_weight: float = Field(40, ge=0, le=100, description="기술적 분석 가중치 (%)")
     fund_weight: float = Field(60, ge=0, le=100, description="펀더멘탈 분석 가중치 (%)")
+    save_result: bool = Field(False, description="결과를 Supabase에 저장할지 여부")
 
 class BatchAnalyzeRequest(BaseModel):
     """일괄 분석 요청"""
     stocks: List[str] = Field(..., description="종목 목록", example=["005930", "060250"])
     tech_weight: float = Field(40, ge=0, le=100)
     fund_weight: float = Field(60, ge=0, le=100)
+    save_result: bool = Field(False, description="결과를 Supabase에 저장할지 여부")
+
+
+class WatchlistAddRequest(BaseModel):
+    """관심종목 추가 요청"""
+    stock_code: str = Field(..., description="종목코드")
+    stock_name: str = Field(..., description="종목명")
+    market: Optional[str] = Field(None, description="시장 (KOSPI/KOSDAQ)")
+    buy_price: Optional[int] = Field(None, description="매수가")
+    buy_quantity: Optional[int] = Field(None, description="보유 수량")
+    buy_date: Optional[str] = Field(None, description="매수일 (YYYY-MM-DD)")
+    memo: Optional[str] = Field(None, description="메모")
+
+
+class WatchlistUpdateRequest(BaseModel):
+    """관심종목 수정 요청"""
+    buy_price: Optional[int] = None
+    buy_quantity: Optional[int] = None
+    buy_date: Optional[str] = None
+    memo: Optional[str] = None
 
 class SearchRequest(BaseModel):
     """종목 검색 요청"""
@@ -148,6 +170,10 @@ async def analyze_stock(request: AnalyzeRequest):
             "적극 매도": "🔴🔴🔴"
         }
         
+        # Supabase에 저장 (요청 시)
+        if request.save_result:
+            SupabaseService.save_analysis_result(result)
+
         return AnalyzeResponse(
             success=True,
             code=result["code"],
@@ -166,7 +192,7 @@ async def analyze_stock(request: AnalyzeRequest):
             fundamental_signals=[Signal(**s) for s in result["fundamental_signals"]],
             stock_info=StockInfo(**result.get("stock_data", {}))
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -302,6 +328,112 @@ async def get_presets():
             {"id": "balanced", "name": "균형", "tech": 50, "fund": 50, "description": "밸런스형"},
         ]
     }
+
+
+# ============================================================
+# 관심종목 (Watchlist) API
+# ============================================================
+
+@app.get("/api/watchlist")
+async def get_watchlist():
+    """관심종목 목록 조회"""
+    try:
+        watchlist = SupabaseService.get_watchlist()
+        return {
+            "success": True,
+            "count": len(watchlist),
+            "data": watchlist
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/watchlist")
+async def add_to_watchlist(request: WatchlistAddRequest):
+    """관심종목 추가"""
+    try:
+        result = SupabaseService.add_to_watchlist(
+            stock_code=request.stock_code,
+            stock_name=request.stock_name,
+            market=request.market,
+            buy_price=request.buy_price,
+            buy_quantity=request.buy_quantity,
+            buy_date=request.buy_date,
+            memo=request.memo
+        )
+
+        if result:
+            return {"success": True, "message": "관심종목에 추가되었습니다", "data": result}
+        else:
+            raise HTTPException(status_code=500, detail="추가 실패")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/watchlist/{stock_code}")
+async def update_watchlist_item(stock_code: str, request: WatchlistUpdateRequest):
+    """관심종목 정보 수정"""
+    try:
+        updates = request.model_dump(exclude_none=True)
+
+        if not updates:
+            raise HTTPException(status_code=400, detail="수정할 내용이 없습니다")
+
+        result = SupabaseService.update_watchlist_item(stock_code, updates)
+
+        if result:
+            return {"success": True, "message": "수정되었습니다", "data": result}
+        else:
+            raise HTTPException(status_code=404, detail="종목을 찾을 수 없습니다")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/watchlist/{stock_code}")
+async def remove_from_watchlist(stock_code: str):
+    """관심종목에서 제거"""
+    try:
+        success = SupabaseService.remove_from_watchlist(stock_code)
+
+        if success:
+            return {"success": True, "message": "삭제되었습니다"}
+        else:
+            raise HTTPException(status_code=500, detail="삭제 실패")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/watchlist/{stock_code}/check")
+async def check_watchlist(stock_code: str):
+    """관심종목 여부 확인"""
+    is_in = SupabaseService.is_in_watchlist(stock_code)
+    return {"success": True, "is_in_watchlist": is_in}
+
+
+# ============================================================
+# 분석 히스토리 API
+# ============================================================
+
+@app.get("/api/history")
+async def get_analysis_history(stock_code: Optional[str] = None, limit: int = 50):
+    """분석 히스토리 조회"""
+    try:
+        history = SupabaseService.get_analysis_history(stock_code=stock_code, limit=limit)
+        return {
+            "success": True,
+            "count": len(history),
+            "data": history
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ============================================================
 # 실행

@@ -5,3 +5,4 @@ beautifulsoup4==4.12.3
 lxml==5.1.0
 numpy==1.26.3
 pydantic==2.5.3
+supabase==2.3.0
