@@ -135,124 +135,275 @@ class NaverFinanceCrawler:
     def get_stock_info(self, code: str) -> StockData:
         """주식 기본 정보 크롤링"""
         stock = StockData(code=code)
-        
+
         # 1. 메인 페이지
         url = f"{self.BASE_URL}/item/main.naver?code={code}"
         try:
             resp = self.session.get(url, timeout=10)
             soup = BeautifulSoup(resp.text, 'html.parser')
-            
+
             # 종목명
             name_tag = soup.select_one('div.wrap_company h2 a')
             if name_tag:
                 stock.name = name_tag.text.strip()
-            
+
             # 현재가
             price_tag = soup.select_one('p.no_today span.blind')
             if price_tag:
                 stock.current_price = self._parse_number(price_tag.text)
-            
-            # 전일종가 (no_exday에서)
-            prev_tag = soup.select_one('td.first span.blind')
-            if prev_tag:
-                stock.prev_close = self._parse_number(prev_tag.text)
-            
-            # 시가총액
-            for em in soup.select('em'):
-                parent = em.find_parent()
-                if parent:
-                    parent_text = parent.get_text()
-                    if '시가총액' in parent_text:
-                        # "시가총액 9,076억" 형태
-                        nums = re.findall(r'[\d,]+', parent_text)
-                        if nums:
-                            val = self._parse_number(nums[-1])
-                            if '조' in parent_text:
-                                stock.market_cap = val * 1000000000000
-                            else:
-                                stock.market_cap = val * 100000000
-            
-            # 거래량
-            vol_tag = soup.select_one('td.first span.blind')
-            tables = soup.select('table.no_info')
-            for table in tables:
-                text = table.get_text()
-                if '거래량' in text:
-                    nums = re.findall(r'거래량\s*([\d,]+)', text)
-                    if nums:
-                        stock.volume = int(self._parse_number(nums[0]))
-            
-            # 52주 최고/최저
+
+            # 전일종가
+            for tr in soup.select('table.no_info tr'):
+                th = tr.select_one('th')
+                td = tr.select_one('td')
+                if th and td:
+                    label = th.get_text(strip=True)
+                    if '전일' in label:
+                        stock.prev_close = self._parse_number(td.get_text())
+                    elif '거래량' in label:
+                        stock.volume = int(self._parse_number(td.get_text()))
+
+            # 시가총액 - 새로운 방식
+            market_cap_area = soup.select_one('div.first')
+            if market_cap_area:
+                text = market_cap_area.get_text()
+                if '시가총액' in text:
+                    # 시가총액 순위 앞의 숫자 찾기
+                    match = re.search(r'시가총액[^\d]*([\d,]+)\s*(조|억)', text)
+                    if match:
+                        val = self._parse_number(match.group(1))
+                        unit = match.group(2)
+                        if unit == '조':
+                            stock.market_cap = val * 1000000000000
+                        else:
+                            stock.market_cap = val * 100000000
+
+            # 시가총액 대체 방식
+            if stock.market_cap == 0:
+                for em in soup.select('em'):
+                    em_id = em.get('id', '')
+                    if em_id == '_market_sum':
+                        val = self._parse_number(em.get_text())
+                        # 억 단위로 표시됨
+                        stock.market_cap = val * 100000000
+                        break
+
+            # 52주 최고/최저 - 개선된 방식
             for table in soup.select('table'):
-                text = table.get_text()
-                if '52주' in text and '최고' in text:
-                    # 52주 최고|최저 패턴 찾기
-                    high_match = re.search(r'최고\s*([\d,]+)', text)
-                    low_match = re.search(r'최저\s*([\d,]+)', text)
-                    if high_match:
-                        stock.high_52w = self._parse_number(high_match.group(1))
-                    if low_match:
-                        stock.low_52w = self._parse_number(low_match.group(1))
-            
-            # PER, EPS, PBR, BPS
+                rows = table.select('tr')
+                for row in rows:
+                    text = row.get_text()
+                    if '52주' in text:
+                        tds = row.select('td')
+                        for td in tds:
+                            td_text = td.get_text()
+                            # "52주최고|558,000" 또는 "52주최저|312,500" 패턴
+                            if '최고' in text:
+                                spans = td.select('span.blind')
+                                if spans:
+                                    stock.high_52w = self._parse_number(spans[0].get_text())
+                            if '최저' in text:
+                                spans = td.select('span.blind')
+                                if spans and len(spans) > 0:
+                                    val = self._parse_number(spans[-1].get_text())
+                                    if val > 0:
+                                        stock.low_52w = val
+
+            # 52주 고저 - 대체 방식 (sise_new 테이블)
+            if stock.high_52w == 0 or stock.low_52w == 0:
+                for td in soup.select('td'):
+                    td_text = td.get_text()
+                    if '52주최고' in td_text:
+                        match = re.search(r'([\d,]+)', td_text.replace('52주최고', ''))
+                        if match:
+                            stock.high_52w = self._parse_number(match.group(1))
+                    if '52주최저' in td_text:
+                        match = re.search(r'([\d,]+)', td_text.replace('52주최저', ''))
+                        if match:
+                            stock.low_52w = self._parse_number(match.group(1))
+
+            # PER, EPS, PBR, BPS - 개선
             per_table = soup.select_one('table.per_table')
             if per_table:
-                tds = per_table.select('td')
-                for i, td in enumerate(tds[:8]):
-                    val = self._parse_number(td.text)
-                    if i == 0:
-                        stock.per = val
-                    elif i == 1:
-                        stock.eps = val
-                    elif i == 2 or i == 4:
-                        if val > 0 and stock.pbr == 0:
-                            stock.pbr = val
-                    elif i == 3 or i == 5:
-                        if val > 0 and stock.bps == 0:
-                            stock.bps = val
-            
-            # 외국인 지분율
-            for span in soup.select('span.per'):
-                text = span.get_text()
-                if '%' in text:
-                    val = self._parse_number(text.replace('%', ''))
-                    if 0 < val < 100:
-                        stock.foreign_ratio = val
-                        break
-                        
+                tds = per_table.select('td em')
+                values = [self._parse_number(em.get_text()) for em in tds]
+                if len(values) >= 4:
+                    stock.per = values[0] if values[0] > 0 else 0
+                    stock.eps = values[1] if len(values) > 1 else 0
+                    # 추정 PER/EPS와 실적 PBR/BPS 구분
+                    if len(values) >= 6:
+                        stock.pbr = values[4] if values[4] > 0 else (values[2] if values[2] > 0 else 0)
+                        stock.bps = values[5] if len(values) > 5 else (values[3] if len(values) > 3 else 0)
+                    else:
+                        stock.pbr = values[2] if len(values) > 2 and values[2] > 0 else 0
+                        stock.bps = values[3] if len(values) > 3 else 0
+
+            # 외국인 지분율 - 개선
+            foreign_area = soup.select_one('div.gray')
+            if foreign_area:
+                text = foreign_area.get_text()
+                match = re.search(r'외국인[^\d]*([\d.]+)\s*%', text)
+                if match:
+                    stock.foreign_ratio = float(match.group(1))
+
+            # 외국인 지분율 대체
+            if stock.foreign_ratio == 0:
+                for td in soup.select('td'):
+                    td_text = td.get_text()
+                    if '외국인' in td_text and '%' in td_text:
+                        match = re.search(r'([\d.]+)\s*%', td_text)
+                        if match:
+                            val = float(match.group(1))
+                            if 0 < val < 100:
+                                stock.foreign_ratio = val
+                                break
+
         except Exception as e:
             print(f"기본 정보 크롤링 오류: {e}")
-        
+
         # 2. 시세 페이지 (추가 데이터)
         url = f"{self.BASE_URL}/item/sise.naver?code={code}"
         try:
             resp = self.session.get(url, timeout=10)
             soup = BeautifulSoup(resp.text, 'html.parser')
-            
+
             # 전일종가 재확인
+            if stock.prev_close == 0:
+                for tr in soup.select('tr'):
+                    th = tr.select_one('th, td.title')
+                    if th and '전일' in th.get_text():
+                        td = tr.select_one('td span.blind')
+                        if td:
+                            stock.prev_close = self._parse_number(td.get_text())
+                            break
+
+            # 거래량 재확인
+            if stock.volume == 0:
+                vol_td = soup.select_one('td#_quant')
+                if vol_td:
+                    stock.volume = int(self._parse_number(vol_td.get_text()))
+
+            # 52주 고저 재확인
             for tr in soup.select('tr'):
                 text = tr.get_text()
-                if '전일' in text and stock.prev_close == 0:
-                    nums = re.findall(r'[\d,]+', text)
-                    if nums:
-                        stock.prev_close = self._parse_number(nums[0])
-                        break
-            
-            # 거래량 재확인
-            for td in soup.select('td'):
-                if stock.volume == 0:
-                    text = td.get_text()
-                    if td.get('id') == '_quant' or '거래량' in str(td.previous_sibling):
-                        stock.volume = int(self._parse_number(text))
-                        
+                if '52주' in text and '최고' in text:
+                    spans = tr.select('span.blind')
+                    if len(spans) >= 2:
+                        if stock.high_52w == 0:
+                            stock.high_52w = self._parse_number(spans[0].get_text())
+                        if stock.low_52w == 0:
+                            stock.low_52w = self._parse_number(spans[1].get_text())
+
         except Exception as e:
             pass
-        
+
+        # 3. 종목분석 페이지 (ROE, 추가 재무정보)
+        url = f"{self.BASE_URL}/item/coinfo.naver?code={code}"
+        try:
+            resp = self.session.get(url, timeout=10)
+            soup = BeautifulSoup(resp.text, 'html.parser')
+
+            # iframe 내 데이터는 직접 접근 불가, 대신 투자지표 탭 사용
+        except Exception as e:
+            pass
+
+        # 4. 네이버 금융 모바일 API (추가 데이터)
+        self._fetch_additional_data(stock, code)
+
         # 전일종가가 없으면 현재가로 대체
         if stock.prev_close == 0:
             stock.prev_close = stock.current_price
-        
+
         return stock
+
+    def _fetch_additional_data(self, stock: StockData, code: str):
+        """추가 데이터 수집 (시가총액, 외국인, ROE 등) - 네이버 모바일 API 활용"""
+
+        # 통합 투자지표 API (가장 완전한 데이터)
+        try:
+            url = f"https://m.stock.naver.com/api/stock/{code}/integration"
+            resp = self.session.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+
+                if 'totalInfos' in data:
+                    for info in data['totalInfos']:
+                        key = info.get('key', '')
+                        code_type = info.get('code', '')
+                        value = info.get('value', '')
+
+                        # 52주 최고
+                        if code_type == 'highPriceOf52Weeks' or key == '52주 최고':
+                            if stock.high_52w == 0:
+                                stock.high_52w = self._parse_number(value)
+
+                        # 52주 최저
+                        elif code_type == 'lowPriceOf52Weeks' or key == '52주 최저':
+                            if stock.low_52w == 0:
+                                stock.low_52w = self._parse_number(value)
+
+                        # 거래량
+                        elif code_type == 'accumulatedTradingVolume' or key == '거래량':
+                            if stock.volume == 0:
+                                stock.volume = int(self._parse_number(value))
+
+                        # 시가총액
+                        elif code_type == 'marketValue' or key == '시총':
+                            if stock.market_cap == 0:
+                                # "16조 1,100억" 형태 파싱
+                                jo_match = re.search(r'([\d,]+)\s*조', value)
+                                eok_match = re.search(r'([\d,]+)\s*억', value)
+                                total = 0
+                                if jo_match:
+                                    total += self._parse_number(jo_match.group(1)) * 1000000000000
+                                if eok_match:
+                                    total += self._parse_number(eok_match.group(1)) * 100000000
+                                if total > 0:
+                                    stock.market_cap = total
+
+                        # 외국인 지분율
+                        elif code_type == 'foreignRate' or '외인' in key:
+                            if stock.foreign_ratio == 0:
+                                stock.foreign_ratio = self._parse_number(value.replace('%', ''))
+
+                        # ROE
+                        elif code_type == 'roe' or key == 'ROE':
+                            if stock.roe == 0:
+                                stock.roe = self._parse_number(value.replace('%', ''))
+
+                        # PER (백업)
+                        elif code_type == 'per' or key == 'PER':
+                            if stock.per == 0:
+                                stock.per = self._parse_number(value.replace('배', ''))
+
+                        # PBR (백업)
+                        elif code_type == 'pbr' or key == 'PBR':
+                            if stock.pbr == 0:
+                                stock.pbr = self._parse_number(value.replace('배', ''))
+
+        except Exception as e:
+            pass
+
+        # 재무정보 API (ROE 보완)
+        if stock.roe == 0:
+            try:
+                url = f"https://m.stock.naver.com/api/stock/{code}/finance/annual"
+                resp = self.session.get(url, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+
+                    if 'financeInfos' in data:
+                        for info in data['financeInfos']:
+                            if info.get('key') == 'roe':
+                                values = info.get('values', [])
+                                if values:
+                                    for v in reversed(values):
+                                        if v and v != '-':
+                                            stock.roe = self._parse_number(str(v))
+                                            break
+
+            except Exception as e:
+                pass
     
     def get_price_data(self, code: str, count: int = 120) -> Tuple[List[float], List[int]]:
         """가격/거래량 히스토리"""
