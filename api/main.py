@@ -116,6 +116,8 @@ class AnalyzeResponse(BaseModel):
     fundamental_signals: List[Signal]
     stock_info: StockInfo
     error: Optional[str] = None
+    saved: Optional[bool] = None  # Supabase 저장 성공 여부
+    save_error: Optional[str] = None  # Supabase 저장 실패 시 에러 메시지
 
 class BatchAnalyzeResponse(BaseModel):
     """일괄 분석 결과"""
@@ -164,15 +166,17 @@ async def analyze_stock(request: AnalyzeRequest):
         # 응답 변환
         rec_emoji = {
             "적극 매수": "🟢🟢🟢",
-            "매수": "🟢🟢", 
+            "매수": "🟢🟢",
             "중립": "🟡",
             "매도": "🔴🔴",
             "적극 매도": "🔴🔴🔴"
         }
-        
+
         # Supabase에 저장 (요청 시)
+        save_success = None
+        save_error = None
         if request.save_result:
-            SupabaseService.save_analysis_result(result)
+            save_success, _, save_error = SupabaseService.save_analysis_result(result)
 
         return AnalyzeResponse(
             success=True,
@@ -190,7 +194,9 @@ async def analyze_stock(request: AnalyzeRequest):
             weights=result["weights"],
             technical_signals=[Signal(**s) for s in result["technical_signals"]],
             fundamental_signals=[Signal(**s) for s in result["fundamental_signals"]],
-            stock_info=StockInfo(**result.get("stock_data", {}))
+            stock_info=StockInfo(**result.get("stock_data", {})),
+            saved=save_success,
+            save_error=save_error
         )
 
     except HTTPException:
@@ -352,7 +358,7 @@ async def get_watchlist():
 async def add_to_watchlist(request: WatchlistAddRequest):
     """관심종목 추가"""
     try:
-        result = SupabaseService.add_to_watchlist(
+        success, result, error_msg = SupabaseService.add_to_watchlist(
             stock_code=request.stock_code,
             stock_name=request.stock_name,
             market=request.market,
@@ -362,10 +368,10 @@ async def add_to_watchlist(request: WatchlistAddRequest):
             memo=request.memo
         )
 
-        if result:
+        if success and result:
             return {"success": True, "message": "관심종목에 추가되었습니다", "data": result}
         else:
-            raise HTTPException(status_code=500, detail="추가 실패")
+            raise HTTPException(status_code=500, detail=error_msg or "추가 실패")
 
     except HTTPException:
         raise

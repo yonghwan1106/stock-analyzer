@@ -22,6 +22,25 @@ DEFAULT_WEIGHTS = {
     "fundamental": 0.60
 }
 
+# 신호별 가중치 (핵심 지표에 높은 가중치)
+SIGNAL_WEIGHTS = {
+    # 기술적 지표
+    "이동평균선 배열": 1.5,
+    "20일선 대비": 1.0,
+    "RSI": 1.2,
+    "MACD": 1.0,
+    "볼린저밴드": 0.8,
+    "스토캐스틱": 0.8,
+    "거래량": 1.0,
+    # 펀더멘탈 지표
+    "PER": 2.0,        # 핵심
+    "PBR": 1.2,
+    "ROE": 2.0,        # 핵심
+    "52주 위치": 1.5,
+    "외국인 지분율": 0.8,  # 참고
+    "시가총액": 0.5,      # 참고
+}
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
@@ -552,15 +571,38 @@ class TechnicalCalculator:
 
 class StockAnalyzer:
     """주식 종합 분석기"""
-    
+
     def __init__(self, weights: Dict[str, float] = None):
         self.weights = weights or DEFAULT_WEIGHTS.copy()
         self.crawler = NaverFinanceCrawler()
-    
+
     def set_weights(self, technical: float, fundamental: float):
         total = technical + fundamental
         self.weights["technical"] = technical / total
         self.weights["fundamental"] = fundamental / total
+
+    def _classify_stock_type(self, stock: StockData) -> str:
+        """
+        주식 유형 분류 (성장주/가치주/배당주/균형형)
+
+        성장주: 높은 PER + 높은 ROE (성장 기대)
+        가치주: 낮은 PER + 낮은 PBR (저평가)
+        배당주: 높은 배당수익률
+        균형형: 그 외
+        """
+        # 배당주 체크
+        if stock.dividend_yield > 3:
+            return "dividend"
+
+        # 성장주: PER 25배 이상 + ROE 12% 이상
+        if stock.per > 25 and stock.roe > 12:
+            return "growth"
+
+        # 가치주: PER 15배 미만 + PBR 1.5배 미만
+        if stock.per > 0 and stock.per < 15 and stock.pbr > 0 and stock.pbr < 1.5:
+            return "value"
+
+        return "balanced"
     
     def analyze(self, code_or_name: str) -> Optional[Dict]:
         """종목 분석"""
@@ -568,28 +610,31 @@ class StockAnalyzer:
         code = self.crawler.search_stock(code_or_name)
         if not code:
             return None
-        
+
         # 기본 정보
         stock = self.crawler.get_stock_info(code)
         if not stock.name and not stock.current_price:
             return None
-        
+
+        # 주식 유형 분류
+        stock_type = self._classify_stock_type(stock)
+
         # 가격 데이터
         prices, volumes = self.crawler.get_price_data(code, 120)
-        
+
         # 기술적 지표
         tech = TechnicalCalculator.calculate_all(prices, volumes, stock.current_price)
-        
-        # 분석
+
+        # 분석 (주식 유형 전달)
         tech_signals = self._analyze_technical(stock, tech)
-        fund_signals = self._analyze_fundamental(stock)
-        
-        # 점수
+        fund_signals = self._analyze_fundamental(stock, stock_type)
+
+        # 가중치 기반 점수 계산
         tech_score = self._calculate_score(tech_signals)
         fund_score = self._calculate_score(fund_signals)
-        total_score = (tech_score * self.weights["technical"] + 
+        total_score = (tech_score * self.weights["technical"] +
                       fund_score * self.weights["fundamental"])
-        
+
         recommendation, _ = self._get_recommendation(total_score)
         
         return {
@@ -697,54 +742,94 @@ class StockAnalyzer:
         
         return signals
     
-    def _analyze_fundamental(self, stock: StockData) -> List[Signal]:
+    def _analyze_fundamental(self, stock: StockData, stock_type: str = "balanced") -> List[Signal]:
+        """
+        펀더멘탈 분석 (주식 유형별 차별화된 기준 적용)
+
+        Args:
+            stock: 주식 데이터
+            stock_type: 주식 유형 (growth/value/dividend/balanced)
+        """
         signals = []
-        
-        # PER
+
+        # PER - 주식 유형별 차별화된 기준
         if stock.per > 0:
-            if stock.per < 10:
-                signals.append(Signal("PER", f"{stock.per:.1f}배 (저평가)", "bullish"))
-            elif stock.per < 20:
-                signals.append(Signal("PER", f"{stock.per:.1f}배 (적정)", "neutral"))
-            elif stock.per < 30:
-                signals.append(Signal("PER", f"{stock.per:.1f}배 (다소 고평가)", "neutral"))
+            if stock_type == "growth":
+                # 성장주: 높은 PER 허용
+                if stock.per < 30:
+                    signals.append(Signal("PER", f"{stock.per:.1f}배 (성장주 저평가)", "bullish"))
+                elif stock.per < 50:
+                    signals.append(Signal("PER", f"{stock.per:.1f}배 (성장주 적정)", "neutral"))
+                elif stock.per < 80:
+                    signals.append(Signal("PER", f"{stock.per:.1f}배 (성장주 다소 고평가)", "neutral"))
+                else:
+                    signals.append(Signal("PER", f"{stock.per:.1f}배 (성장주 과열)", "bearish"))
+            elif stock_type == "value":
+                # 가치주: 엄격한 PER 기준
+                if stock.per < 8:
+                    signals.append(Signal("PER", f"{stock.per:.1f}배 (심한 저평가)", "bullish"))
+                elif stock.per < 12:
+                    signals.append(Signal("PER", f"{stock.per:.1f}배 (저평가)", "bullish"))
+                elif stock.per < 20:
+                    signals.append(Signal("PER", f"{stock.per:.1f}배 (적정)", "neutral"))
+                else:
+                    signals.append(Signal("PER", f"{stock.per:.1f}배 (가치주 고평가)", "bearish"))
             else:
-                signals.append(Signal("PER", f"{stock.per:.1f}배 (고평가)", "bearish"))
-        
+                # 일반 (balanced/dividend): 중간 기준
+                if stock.per < 10:
+                    signals.append(Signal("PER", f"{stock.per:.1f}배 (저평가)", "bullish"))
+                elif stock.per < 20:
+                    signals.append(Signal("PER", f"{stock.per:.1f}배 (적정)", "neutral"))
+                elif stock.per < 35:
+                    signals.append(Signal("PER", f"{stock.per:.1f}배 (다소 고평가)", "neutral"))
+                else:
+                    signals.append(Signal("PER", f"{stock.per:.1f}배 (고평가)", "bearish"))
+
         # PBR
         if stock.pbr > 0:
             if stock.pbr < 1:
                 signals.append(Signal("PBR", f"{stock.pbr:.2f}배 (자산가치 대비 저평가)", "bullish"))
             elif stock.pbr < 2:
                 signals.append(Signal("PBR", f"{stock.pbr:.2f}배 (적정)", "neutral"))
+            elif stock.pbr < 4:
+                signals.append(Signal("PBR", f"{stock.pbr:.2f}배 (다소 고평가)", "neutral"))
             else:
                 signals.append(Signal("PBR", f"{stock.pbr:.2f}배 (고평가)", "bearish"))
-        
+
         # ROE
         if stock.roe > 0:
-            if stock.roe > 15:
+            if stock.roe > 20:
+                signals.append(Signal("ROE", f"{stock.roe:.1f}% (매우 우수)", "bullish"))
+            elif stock.roe > 15:
                 signals.append(Signal("ROE", f"{stock.roe:.1f}% (우수)", "bullish"))
             elif stock.roe > 10:
                 signals.append(Signal("ROE", f"{stock.roe:.1f}% (양호)", "neutral"))
+            elif stock.roe > 5:
+                signals.append(Signal("ROE", f"{stock.roe:.1f}% (보통)", "neutral"))
             else:
                 signals.append(Signal("ROE", f"{stock.roe:.1f}% (미흡)", "bearish"))
-        
-        # 52주 위치
+
+        # 52주 위치 - 추세 추종 관점으로 개선
+        # 신고가 = 상승추세 강함 (bullish), 저점 = 하락추세 (bearish)
         if stock.high_52w > 0 and stock.low_52w > 0 and stock.current_price > 0:
             high_52 = max(stock.high_52w, stock.current_price)
             low_52 = stock.low_52w
             if high_52 > low_52:
                 position = (stock.current_price - low_52) / (high_52 - low_52) * 100
-                
-                if position > 90:
-                    signals.append(Signal("52주 위치", f"{position:.0f}% (신고가 근처)", "neutral"))
-                elif position > 70:
-                    signals.append(Signal("52주 위치", f"{position:.0f}% (고점 근처)", "bearish"))
-                elif position < 30:
-                    signals.append(Signal("52주 위치", f"{position:.0f}% (저점 근처)", "bullish"))
+
+                if position >= 95:
+                    signals.append(Signal("52주 위치", f"{position:.0f}% (신고가 돌파)", "bullish"))
+                elif position >= 85:
+                    signals.append(Signal("52주 위치", f"{position:.0f}% (강한 상승추세)", "bullish"))
+                elif position >= 70:
+                    signals.append(Signal("52주 위치", f"{position:.0f}% (상승추세)", "neutral"))
+                elif position >= 30:
+                    signals.append(Signal("52주 위치", f"{position:.0f}% (횡보)", "neutral"))
+                elif position >= 20:
+                    signals.append(Signal("52주 위치", f"{position:.0f}% (하락추세)", "bearish"))
                 else:
-                    signals.append(Signal("52주 위치", f"{position:.0f}%", "neutral"))
-        
+                    signals.append(Signal("52주 위치", f"{position:.0f}% (52주 신저가 근처)", "bearish"))
+
         # 외국인 지분율
         if stock.foreign_ratio > 0:
             if stock.foreign_ratio > 30:
@@ -753,7 +838,7 @@ class StockAnalyzer:
                 signals.append(Signal("외국인 지분율", f"{stock.foreign_ratio:.1f}% (보통)", "neutral"))
             else:
                 signals.append(Signal("외국인 지분율", f"{stock.foreign_ratio:.1f}% (낮음)", "neutral"))
-        
+
         # 시가총액
         if stock.market_cap > 0:
             cap_billion = stock.market_cap / 100000000
@@ -765,16 +850,34 @@ class StockAnalyzer:
                 signals.append(Signal("시가총액", f"{cap_billion:.0f}억 (중형주)", "neutral"))
             else:
                 signals.append(Signal("시가총액", f"{cap_billion:.0f}억 (소형주)", "bearish"))
-        
+
         return signals
     
     def _calculate_score(self, signals: List[Signal]) -> float:
+        """
+        가중치 기반 점수 계산
+
+        핵심 지표(PER, ROE, 이동평균선)에 높은 가중치를 부여하여
+        중요한 신호가 점수에 더 큰 영향을 미치도록 함
+        """
         if not signals:
             return 50
-        
+
         score_map = {"bullish": 100, "neutral": 50, "bearish": 0}
-        total = sum(score_map[s.sentiment] for s in signals)
-        return total / len(signals)
+
+        weighted_sum = 0.0
+        weight_total = 0.0
+
+        for signal in signals:
+            score = score_map[signal.sentiment]
+            weight = SIGNAL_WEIGHTS.get(signal.indicator, 1.0)  # 기본 가중치 1.0
+            weighted_sum += score * weight
+            weight_total += weight
+
+        if weight_total == 0:
+            return 50
+
+        return weighted_sum / weight_total
     
     def _get_recommendation(self, score: float) -> Tuple[str, str]:
         if score >= 75:

@@ -56,6 +56,7 @@ export default function PortfolioPage() {
   const [formBuyDate, setFormBuyDate] = useState('')
   const [formMemo, setFormMemo] = useState('')
   const [formLoading, setFormLoading] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)  // 폼 에러 메시지
 
   // Search for adding
   const [searchQuery, setSearchQuery] = useState('')
@@ -108,11 +109,12 @@ export default function PortfolioPage() {
 
   const addToWatchlist = async () => {
     if (!formCode || !formName) {
-      alert('종목코드와 종목명을 입력해주세요')
+      setFormError('종목코드와 종목명을 입력해주세요')
       return
     }
 
     setFormLoading(true)
+    setFormError(null)
     try {
       const res = await fetch(`${API_URL}/api/watchlist`, {
         method: 'POST',
@@ -133,10 +135,11 @@ export default function PortfolioPage() {
         resetForm()
         fetchWatchlist()
       } else {
-        alert('추가에 실패했습니다')
+        // 서버에서 반환한 상세 에러 메시지 표시
+        setFormError(data.detail || '추가에 실패했습니다')
       }
-    } catch {
-      alert('서버 오류가 발생했습니다')
+    } catch (err: any) {
+      setFormError(err.message || '서버 연결에 실패했습니다')
     } finally {
       setFormLoading(false)
     }
@@ -241,6 +244,7 @@ export default function PortfolioPage() {
     setFormBuyDate('')
     setFormMemo('')
     setSearchQuery('')
+    setFormError(null)
   }
 
   const openEditModal = (item: WatchlistItem) => {
@@ -580,6 +584,16 @@ export default function PortfolioPage() {
                 className="terminal-input w-full resize-none"
               />
             </div>
+
+            {/* Error Message */}
+            {formError && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg">
+                <div className="flex items-center gap-2 text-rose-400 text-sm">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>{formError}</span>
+                </div>
+              </div>
+            )}
 
             {/* Actions */}
             <div className="flex justify-end gap-3 pt-2">

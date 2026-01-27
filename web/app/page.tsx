@@ -44,6 +44,8 @@ interface AnalysisResult {
   technical_signals: Signal[]
   fundamental_signals: Signal[]
   stock_info: StockInfo
+  saved?: boolean | null  // Supabase 저장 성공 여부
+  save_error?: string | null  // Supabase 저장 실패 시 에러 메시지
 }
 
 interface BatchResult {
@@ -510,6 +512,19 @@ export default function AnalyzePage() {
                 <span className="text-slate-600">|</span>
                 <span className="text-slate-500">가중치: <span className="text-amber-500">{(result.weights.technical * 100).toFixed(0)}%/{(result.weights.fundamental * 100).toFixed(0)}%</span></span>
               </div>
+
+              {/* 저장 상태 표시 */}
+              {saveToDb && result.saved !== undefined && result.saved !== null && (
+                <div className={`mt-3 pt-3 border-t border-slate-700/50 text-xs font-mono ${
+                  result.saved ? 'text-emerald-400' : 'text-rose-400'
+                }`}>
+                  {result.saved ? (
+                    <span>DB 저장 완료</span>
+                  ) : (
+                    <span>DB 저장 실패: {result.save_error || '알 수 없는 오류'}</span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

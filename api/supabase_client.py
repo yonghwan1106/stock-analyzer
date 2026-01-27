@@ -5,7 +5,7 @@ Supabase 클라이언트 모듈
 """
 
 import os
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
 from supabase import create_client, Client
 
@@ -25,33 +25,45 @@ class SupabaseService:
     # ============================================================
 
     @staticmethod
-    def save_analysis_result(result: Dict[str, Any]) -> Optional[Dict]:
-        """분석 결과를 Supabase에 저장"""
+    def save_analysis_result(result: Dict[str, Any]) -> Tuple[bool, Optional[Dict], Optional[str]]:
+        """
+        분석 결과를 Supabase에 저장
+
+        Returns:
+            Tuple[bool, Optional[Dict], Optional[str]]: (성공 여부, 저장된 데이터, 에러 메시지)
+        """
         try:
+            # 데이터 타입 명시적 변환
+            current_price = result.get("current_price", 0)
             data = {
-                "stock_code": result.get("code", ""),
-                "stock_name": result.get("name", ""),
+                "stock_code": str(result.get("code", "")),
+                "stock_name": str(result.get("name", "")),
                 "market": result.get("market"),
-                "current_price": result.get("current_price"),
+                "current_price": int(current_price) if current_price else 0,  # float -> int
                 "price_change": result.get("price_change"),
-                "price_change_percent": result.get("change_pct"),
-                "technical_score": result.get("technical_score"),
+                "price_change_percent": float(result.get("change_pct", 0)) if result.get("change_pct") else 0,
+                "technical_score": float(result.get("technical_score", 0)),
                 "technical_signals": result.get("technical_signals", []),
-                "fundamental_score": result.get("fundamental_score"),
+                "fundamental_score": float(result.get("fundamental_score", 0)),
                 "fundamental_metrics": result.get("stock_data", {}),
-                "total_score": result.get("total_score"),
-                "recommendation": result.get("recommendation"),
-                "tech_weight": result.get("weights", {}).get("technical", 0.7),
-                "fund_weight": result.get("weights", {}).get("fundamental", 0.3),
+                "total_score": float(result.get("total_score", 0)),
+                "recommendation": str(result.get("recommendation", "")),
+                "tech_weight": float(result.get("weights", {}).get("technical", 0.7)),
+                "fund_weight": float(result.get("weights", {}).get("fundamental", 0.3)),
                 "analyzed_at": datetime.now().isoformat()
             }
 
             response = supabase.table("sa_analysis_results").insert(data).execute()
-            return response.data[0] if response.data else None
+
+            if response.data:
+                return True, response.data[0], None
+            else:
+                return False, None, "데이터 저장 후 응답 없음"
 
         except Exception as e:
-            print(f"[Supabase] 분석 결과 저장 실패: {e}")
-            return None
+            error_msg = f"{type(e).__name__}: {str(e)}"
+            print(f"[Supabase] 분석 결과 저장 실패: {error_msg}")
+            return False, None, error_msg
 
     @staticmethod
     def get_analysis_history(
@@ -87,17 +99,23 @@ class SupabaseService:
         buy_quantity: Optional[int] = None,
         buy_date: Optional[str] = None,
         memo: Optional[str] = None
-    ) -> Optional[Dict]:
-        """관심종목 추가"""
+    ) -> Tuple[bool, Optional[Dict], Optional[str]]:
+        """
+        관심종목 추가
+
+        Returns:
+            Tuple[bool, Optional[Dict], Optional[str]]: (성공 여부, 저장된 데이터, 에러 메시지)
+        """
         try:
+            # 데이터 타입 명시적 변환
             data = {
-                "stock_code": stock_code,
-                "stock_name": stock_name,
-                "market": market,
-                "buy_price": buy_price,
-                "buy_quantity": buy_quantity,
-                "buy_date": buy_date,
-                "memo": memo
+                "stock_code": str(stock_code),
+                "stock_name": str(stock_name),
+                "market": str(market) if market else None,
+                "buy_price": int(buy_price) if buy_price else None,
+                "buy_quantity": int(buy_quantity) if buy_quantity else None,
+                "buy_date": str(buy_date) if buy_date else None,
+                "memo": str(memo) if memo else None
             }
 
             # upsert로 중복 시 업데이트
@@ -106,11 +124,15 @@ class SupabaseService:
                 on_conflict="stock_code"
             ).execute()
 
-            return response.data[0] if response.data else None
+            if response.data:
+                return True, response.data[0], None
+            else:
+                return False, None, "데이터 저장 후 응답 없음"
 
         except Exception as e:
-            print(f"[Supabase] 관심종목 추가 실패: {e}")
-            return None
+            error_msg = f"{type(e).__name__}: {str(e)}"
+            print(f"[Supabase] 관심종목 추가 실패: {error_msg}")
+            return False, None, error_msg
 
     @staticmethod
     def get_watchlist() -> List[Dict]:
