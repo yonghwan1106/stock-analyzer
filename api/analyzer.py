@@ -277,6 +277,28 @@ class NaverFinanceCrawler:
                                 stock.foreign_ratio = val
                                 break
 
+            # ROE 크롤링 (tb_type1 테이블에서 추출)
+            for table in soup.find_all('table'):
+                rows = table.find_all('tr')
+                for row in rows:
+                    th = row.find('th')
+                    if th and 'ROE' in th.get_text():
+                        tds = row.find_all('td')
+                        # 가장 최근의 유효한 ROE 값 추출
+                        for td in tds:
+                            val_text = td.get_text(strip=True)
+                            if val_text and val_text != '-' and val_text != 'N/A':
+                                try:
+                                    roe_val = self._parse_number(val_text)
+                                    if roe_val > 0:
+                                        stock.roe = roe_val
+                                        break
+                                except:
+                                    continue
+                        break
+                if stock.roe > 0:
+                    break
+
         except Exception as e:
             print(f"기본 정보 크롤링 오류: {e}")
 
