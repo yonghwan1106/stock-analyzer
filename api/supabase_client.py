@@ -118,11 +118,8 @@ class SupabaseService:
                 "memo": str(memo) if memo else None
             }
 
-            # upsert로 중복 시 업데이트
-            response = supabase.table("sa_watchlist").upsert(
-                data,
-                on_conflict="stock_code"
-            ).execute()
+            # insert (트리거에서 ON CONFLICT 처리)
+            response = supabase.table("sa_watchlist").insert(data).execute()
 
             if response.data:
                 return True, response.data[0], None
