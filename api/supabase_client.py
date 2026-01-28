@@ -13,8 +13,13 @@ from supabase import create_client, Client
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://imudgfxnijxdonrvsbbj.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImltdWRnZnhuaWp4ZG9ucnZzYmJqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk0OTE4MjUsImV4cCI6MjA4NTA2NzgyNX0.7ZSeLNPdrOVcu-jAYteGNxbYt0QOueC8reGzqu5Soo4")
 
-# 클라이언트 초기화
+# 클라이언트 초기화 (stock_analysis 스키마 사용)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# stock_analysis 스키마 클라이언트
+def get_table(table_name: str):
+    """stock_analysis 스키마의 테이블에 접근"""
+    return supabase.schema('stock_analysis').table(table_name)
 
 
 class SupabaseService:
@@ -53,7 +58,7 @@ class SupabaseService:
                 "analyzed_at": datetime.now().isoformat()
             }
 
-            response = supabase.table("sa_analysis_results").insert(data).execute()
+            response = get_table("analysis_results").insert(data).execute()
 
             if response.data:
                 return True, response.data[0], None
@@ -72,7 +77,7 @@ class SupabaseService:
     ) -> List[Dict]:
         """분석 히스토리 조회"""
         try:
-            query = supabase.table("sa_analysis_results").select("*")
+            query = get_table("analysis_results").select("*")
 
             if stock_code:
                 query = query.eq("stock_code", stock_code)
@@ -119,7 +124,7 @@ class SupabaseService:
             }
 
             # upsert로 중복 시 업데이트
-            response = supabase.table("sa_watchlist").upsert(
+            response = get_table("watchlist").upsert(
                 data,
                 on_conflict="stock_code"
             ).execute()
@@ -138,7 +143,7 @@ class SupabaseService:
     def get_watchlist() -> List[Dict]:
         """관심종목 목록 조회"""
         try:
-            response = supabase.table("sa_watchlist")\
+            response = get_table("watchlist")\
                 .select("*")\
                 .order("created_at", desc=True)\
                 .execute()
@@ -158,7 +163,7 @@ class SupabaseService:
         try:
             updates["updated_at"] = datetime.now().isoformat()
 
-            response = supabase.table("sa_watchlist")\
+            response = get_table("watchlist")\
                 .update(updates)\
                 .eq("stock_code", stock_code)\
                 .execute()
@@ -173,7 +178,7 @@ class SupabaseService:
     def remove_from_watchlist(stock_code: str) -> bool:
         """관심종목에서 제거"""
         try:
-            supabase.table("sa_watchlist")\
+            get_table("watchlist")\
                 .delete()\
                 .eq("stock_code", stock_code)\
                 .execute()
@@ -188,7 +193,7 @@ class SupabaseService:
     def is_in_watchlist(stock_code: str) -> bool:
         """관심종목 여부 확인"""
         try:
-            response = supabase.table("sa_watchlist")\
+            response = get_table("watchlist")\
                 .select("id")\
                 .eq("stock_code", stock_code)\
                 .execute()
